@@ -1,14 +1,16 @@
 //! The HTTP transport against an in-process fake table server: both
-//! encodings, live changes, reconnecting as a resync with backoff,
-//! credentials sent exactly as given, errors, Unix sockets, and tokio kept
-//! out of the other crates.
+//! encodings, live changes, reconnecting as a resync with jittered backoff,
+//! the idle timeout, credentials sent exactly as given, errors, Unix
+//! sockets, and tokio kept out of the other crates.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use binnacle_core::{Axis, AxisConfig, Grid, Viewport};
 use binnacle_described::{DescribedSource, Encoding, Message, Received, Scope, Wire};
-use binnacle_described_http::{Auth, Backoff, Blocking, Endpoint, Event, Options, Transport};
+use binnacle_described_http::{
+    Auth, Backoff, Blocking, Endpoint, Event, Options, Transport, Unserved,
+};
 use binnacle_testkit::fake_tables::{FakeTables, Running, Step};
 
 fn crews() -> PathBuf {
@@ -187,9 +189,13 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
     let backoff = Backoff {
         initial: Duration::from_millis(300),
         max: Duration::from_secs(5),
+        settle: Duration::from_millis(300),
     };
     let fake = fake().start().unwrap();
-    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
+    // Seed 3 draws waits of about 151 ms and 156 ms, well clear of the
+    // stale backoff's 300 ms least.
+    let options = options(&fake).backoff(backoff).seed(Some(3));
+    let transport = Blocking::new(options).unwrap();
     let mut source = source();
     host(&transport, &mut source, synced);
     let keys = source.row_keys().to_vec();
@@ -207,26 +213,62 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].target, requests[1].target);
     let gap = requests[1].at - requests[0].at;
-    assert!(gap >= backoff.initial, "{gap:?}");
+    assert!(gap >= backoff.initial / 2, "{gap:?}");
     assert_eq!(source.row_count(), 5);
     let bravo = keys[1];
     let survivors: Vec<_> = keys.iter().copied().filter(|&k| k != bravo).collect();
     assert_eq!(source.row_keys(), survivors, "survivors keep their Keys");
-    // Synced reset the backoff: the next end waits the initial delay
-    // again, not double.
+    // The stream stays open `settle` after its first synced, which resets
+    // the backoff: the next end waits up to the initial delay again, not
+    // double. A resync on the way syncs again, but `settle` runs from the
+    // first.
+    std::thread::sleep(Duration::from_millis(200));
+    fake.push(Step::Resync {
+        table: "crews".into(),
+    });
+    host(&transport, &mut source, |s, e| {
+        s.status().synced && matches!(e, Event::Message(Message::Synced { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(200));
     let before = Instant::now();
     fake.push(Step::End);
     host(&transport, &mut source, |_, e| *e == Event::Ended);
     let ended = Instant::now();
     host(&transport, &mut source, synced);
     let gap = fake.requests()[2].at - ended;
-    assert!(gap >= backoff.initial, "{gap:?}");
-    // Not doubled: a stale backoff would wait 600 ms.
-    assert!(
-        gap < backoff.initial * 2,
-        "{gap:?} after {:?}",
-        ended - before
-    );
+    assert!(gap >= backoff.initial / 2, "{gap:?}");
+    // Not doubled: a stale backoff would wait at least 300 ms.
+    assert!(gap < backoff.initial, "{gap:?} after {:?}", ended - before);
+}
+
+#[test]
+fn a_server_that_fails_right_after_synced_is_waited_on_longer_each_time() {
+    let backoff = Backoff {
+        initial: Duration::from_millis(100),
+        max: Duration::from_secs(5),
+        settle: Duration::from_secs(10),
+    };
+    let fake = fake().start().unwrap();
+    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
+    let mut source = source();
+    let mut ends = Vec::new();
+    for _ in 0..4 {
+        host(&transport, &mut source, synced);
+        fake.push(Step::End);
+        host(&transport, &mut source, |_, e| *e == Event::Ended);
+        ends.push(Instant::now());
+    }
+    host(&transport, &mut source, synced);
+    let requests = fake.requests();
+    let gaps: Vec<Duration> = (ends.iter().zip(&requests[1..]))
+        .map(|(ended, request)| request.at - *ended)
+        .collect();
+    // Delays of 100, 200, 400 and 800 ms, each wait in its upper half; a
+    // backoff reset by each `synced` would wait at most 100 ms each time.
+    let ms = Duration::from_millis;
+    for (gap, least) in gaps.iter().zip([ms(50), ms(100), ms(200), ms(400)]) {
+        assert!(*gap >= least, "{gaps:?}");
+    }
 }
 
 #[test]
@@ -313,7 +355,7 @@ fn a_404_fails_once_and_a_500_is_retried() {
     let Some(Event::Failed { status, body }) = events.last() else {
         panic!("{events:?}")
     };
-    assert_eq!(*status, 404);
+    assert_eq!(*status, Some(404));
     assert!(String::from_utf8_lossy(body).contains("unknown table"));
     assert_eq!(transport.recv_timeout(Duration::from_millis(700)), None);
     assert_eq!(first.requests().len(), 1, "not retried");
@@ -321,6 +363,7 @@ fn a_404_fails_once_and_a_500_is_retried() {
     let backoff = Backoff {
         initial: Duration::from_millis(50),
         max: Duration::from_secs(1),
+        ..Backoff::default()
     };
     let fake = fake().failing(500).failing(503).start().unwrap();
     let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
@@ -340,13 +383,16 @@ fn a_404_fails_once_and_a_500_is_retried() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        retries,
-        [
-            (1, backoff.initial, Some(500)),
-            (2, backoff.initial * 2, Some(503))
-        ],
-        "each retry says why and how long"
+    let [(1, first, Some(500)), (2, second, Some(503))] = retries[..] else {
+        panic!("each retry says why: {retries:?}")
+    };
+    assert!(
+        first >= backoff.initial / 2 && first <= backoff.initial,
+        "and how long: {first:?}"
+    );
+    assert!(
+        second >= backoff.initial && second <= backoff.initial * 2,
+        "{second:?}"
     );
     assert!(
         (events[2..].iter()).all(|e| matches!(e, Event::Message(_))),
@@ -354,11 +400,8 @@ fn a_404_fails_once_and_a_500_is_retried() {
     );
     let requests = fake.requests();
     assert_eq!(requests.len(), 3, "two failures, then the table");
-    assert!(requests[1].at - requests[0].at >= backoff.initial);
-    assert!(
-        requests[2].at - requests[1].at >= backoff.initial * 2,
-        "doubling"
-    );
+    assert!(requests[1].at - requests[0].at >= first);
+    assert!(requests[2].at - requests[1].at >= second, "as said");
 }
 
 #[test]
@@ -372,6 +415,7 @@ fn a_refused_connection_is_retried() {
     let backoff = Backoff {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(40),
+        ..Backoff::default()
     };
     let transport = Blocking::new(Options::new(Endpoint::Tcp(url)).backoff(backoff)).unwrap();
     let mut source = source();
@@ -399,27 +443,49 @@ fn a_refused_connection_is_retried() {
     assert_eq!(fake.requests().len(), 1);
 }
 
-#[test]
-fn the_backoff_doubles_up_to_its_most() {
-    let backoff = Backoff {
-        initial: Duration::from_millis(10),
-        max: Duration::from_millis(30),
-    };
-    let fake = (0..5).fold(fake(), |f, _| f.failing(503)).start().unwrap();
-    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
-    let mut source = source();
-    let events = host(&transport, &mut source, synced);
-    let waits: Vec<Duration> = (events.iter())
+/// The waits of a transport seeded with `seed` retrying a server that
+/// fails `failures` times, and the gaps between its requests.
+fn retried(backoff: Backoff, seed: u64, failures: usize) -> (Vec<Duration>, Vec<Duration>) {
+    let fake = (0..failures)
+        .fold(fake(), |f, _| f.failing(503))
+        .start()
+        .unwrap();
+    let options = options(&fake).backoff(backoff).seed(Some(seed));
+    let transport = Blocking::new(options).unwrap();
+    let events = host(&transport, &mut source(), synced);
+    let waits = (events.iter())
         .filter_map(|e| match e {
             Event::Retrying { wait, .. } => Some(*wait),
             _ => None,
         })
         .collect();
-    let ms = Duration::from_millis;
-    assert_eq!(waits, [ms(10), ms(20), ms(30), ms(30), ms(30)]);
     let requests = fake.requests();
-    let last = requests[5].at - requests[4].at;
-    assert!(last >= ms(30) && last < ms(60) * 4, "{last:?}");
+    let gaps = (requests.windows(2))
+        .map(|pair| pair[1].at - pair[0].at)
+        .collect();
+    (waits, gaps)
+}
+
+#[test]
+fn the_backoff_doubles_up_to_its_most_each_wait_in_its_upper_half() {
+    let ms = Duration::from_millis;
+    let backoff = Backoff {
+        initial: ms(10),
+        max: ms(30),
+        ..Backoff::default()
+    };
+    let (waits, gaps) = retried(backoff, 7, 6);
+    let delays = [ms(10), ms(20), ms(30), ms(30), ms(30), ms(30)];
+    assert_eq!(waits.len(), delays.len());
+    for ((wait, delay), gap) in waits.iter().zip(delays).zip(&gaps) {
+        assert!(*wait >= delay / 2 && *wait <= delay, "{waits:?}");
+        assert!(gap >= wait, "each request waits as said: {gaps:?}");
+    }
+    // Jittered: of the four waits at the most, not all are the same.
+    assert!(waits[2..].iter().any(|w| *w != waits[2]), "{waits:?}");
+    // The same seed draws the same waits; another draws others.
+    assert_eq!(retried(backoff, 7, 6).0, waits);
+    assert_ne!(retried(backoff, 8, 6).0, waits);
 }
 
 #[test]
@@ -432,6 +498,7 @@ fn a_retry_limit_turns_a_server_down_or_failing_into_failed() {
     let backoff = Backoff {
         initial: Duration::from_millis(5),
         max: Duration::from_millis(10),
+        ..Backoff::default()
     };
     let down = Options::new(Endpoint::Tcp(url))
         .backoff(backoff)
@@ -447,7 +514,7 @@ fn a_retry_limit_turns_a_server_down_or_failing_into_failed() {
             [
                 Event::Retrying { attempt: 1, .. },
                 Event::Retrying { attempt: 2, .. },
-                Event::Failed { status: 0, .. }
+                Event::Failed { status: None, .. }
             ]
         ),
         "{events:?}"
@@ -462,7 +529,7 @@ fn a_retry_limit_turns_a_server_down_or_failing_into_failed() {
     let Some(Event::Failed { status, body }) = events.last() else {
         panic!("{events:?}")
     };
-    assert_eq!(*status, 503);
+    assert_eq!(*status, Some(503));
     assert!(String::from_utf8_lossy(body).contains("failed"));
     assert_eq!(fake.requests().len(), 2, "one try, one retry");
 }
@@ -556,6 +623,7 @@ fn a_server_that_stalls_is_given_up_on_and_tried_again() {
     let backoff = Backoff {
         initial: Duration::from_millis(20),
         max: Duration::from_millis(40),
+        ..Backoff::default()
     };
     let options = Options::new(Endpoint::Tcp(url))
         .backoff(backoff)
@@ -582,4 +650,142 @@ fn a_credential_never_shows_in_debug_output() {
     let options = Options::new(Endpoint::Tcp("http://x".into())).auth(Auth::Bearer("t0k".into()));
     assert!(!format!("{options:?}").contains("t0k"));
     assert!(!format!("{:?}", Auth::Cookie("s=1".into())).contains("s=1"));
+}
+
+/// The events a watch brings to synced and for `within` after, its
+/// source fed as a host feeds it.
+fn watched(options: Options, within: Duration) -> Vec<Event> {
+    let transport = Blocking::new(options).unwrap();
+    let mut source = source();
+    let mut events = host(&transport, &mut source, synced);
+    let until = Instant::now() + within;
+    loop {
+        if let Some(request) = source.poll_request() {
+            transport.open(request);
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        let Some(event) = transport.recv_timeout(left) else {
+            return events;
+        };
+        match &event {
+            Event::Message(message) => {
+                source.receive(message.clone());
+            }
+            Event::Ended => {
+                source.ended();
+            }
+            _ => {}
+        }
+        events.push(event);
+    }
+}
+
+#[test]
+fn a_silent_stream_ends_after_the_idle_timeout_and_opens_again() {
+    let quiet = fake().heartbeat(Duration::from_secs(3600)).start().unwrap();
+    let idle = Duration::from_millis(200);
+    let backoff = Backoff {
+        initial: Duration::from_millis(20),
+        ..Backoff::default()
+    };
+    let idling = options(&quiet).backoff(backoff).idle(Some(idle));
+    let events = watched(idling, Duration::from_millis(500));
+    assert!(events.contains(&Event::Ended), "{events:?}");
+    let requests = quiet.requests();
+    assert!(requests.len() >= 2, "opened again");
+    assert!(requests[1].at - requests[0].at >= idle);
+
+    // Without it, the silent stream stays open.
+    let quiet = fake().heartbeat(Duration::from_secs(3600)).start().unwrap();
+    let events = watched(options(&quiet), Duration::from_millis(500));
+    assert!(!events.contains(&Event::Ended), "{events:?}");
+    assert_eq!(quiet.requests().len(), 1);
+}
+
+#[test]
+fn heartbeats_keep_a_stream_open_past_the_idle_timeout() {
+    let beating = fake().heartbeat(Duration::from_millis(50)).start().unwrap();
+    let options = options(&beating).idle(Some(Duration::from_millis(200)));
+    let events = watched(options, Duration::from_millis(600));
+    assert!(!events.contains(&Event::Ended), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Message(Message::Progress { .. }))),
+        "{events:?}"
+    );
+    assert_eq!(beating.requests().len(), 1);
+}
+
+#[test]
+fn a_bad_endpoint_or_credential_is_unserved_and_nothing_is_sent() {
+    let fake = fake().start().unwrap();
+    let unserved = |options: Options| {
+        let transport = Blocking::new(options).unwrap();
+        transport.open(source().poll_request().unwrap());
+        let event = transport.recv_timeout(WAIT);
+        assert_eq!(transport.recv_timeout(Duration::from_millis(100)), None);
+        event
+    };
+    let base = fake.url().unwrap();
+    let with_user = base.replace("http://", "http://user@");
+    assert_eq!(
+        unserved(Options::new(Endpoint::Tcp(with_user))),
+        Some(Event::Unserved(Unserved::Endpoint))
+    );
+    let bad_prefix = format!("{base}/a\u{1}b");
+    assert_eq!(
+        unserved(Options::new(Endpoint::Tcp(bad_prefix))),
+        Some(Event::Unserved(Unserved::Endpoint))
+    );
+    let bad_token = options(&fake).auth(Auth::Bearer("a\nb".into()));
+    assert_eq!(unserved(bad_token), Some(Event::Unserved(Unserved::Auth)));
+    assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn settling_leaves_a_stream_with_an_idle_timeout_open() {
+    let beating = fake().heartbeat(Duration::from_millis(50)).start().unwrap();
+    let backoff = Backoff {
+        settle: Duration::from_millis(100),
+        ..Backoff::default()
+    };
+    let options = options(&beating)
+        .backoff(backoff)
+        .idle(Some(Duration::from_millis(300)));
+    let events = watched(options, Duration::from_millis(700));
+    assert!(!events.contains(&Event::Ended), "{events:?}");
+    assert_eq!(beating.requests().len(), 1);
+}
+
+#[test]
+fn a_message_coming_slowly_a_byte_at_a_time_is_not_idle() {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let line = b"{\"type\": \"progress\", \"sequence\": 7}\n";
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut header = String::new();
+        while reader.read_line(&mut header).unwrap() > 2 {
+            header.clear();
+        }
+        stream.set_nodelay(true).unwrap();
+        let head =
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+        stream.write_all(head.as_bytes()).unwrap();
+        // 35 bytes 25 ms apart: the message takes far longer than `idle`,
+        // each byte well within it.
+        for byte in line {
+            stream.write_all(&[*byte]).unwrap();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    let options = Options::new(Endpoint::Tcp(url)).idle(Some(Duration::from_millis(150)));
+    let transport = Blocking::new(options).unwrap();
+    transport.open(source().poll_request().unwrap());
+    let progress = Event::Message(Message::Progress { sequence: Some(7) });
+    assert_eq!(transport.recv_timeout(WAIT), Some(progress));
+    assert_eq!(transport.recv_timeout(WAIT), Some(Event::Ended));
 }

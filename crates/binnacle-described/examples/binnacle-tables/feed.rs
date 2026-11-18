@@ -44,8 +44,8 @@ impl Notes {
 /// `budget`, so a burst of changes still lets frames draw and keys work
 /// between its parts. `open` serves the requests the source makes (the
 /// watch again after an end). Keeps `notes` up to date; returns the Change
-/// Notices, or the server's answer if it refused the watch or the retries
-/// ran out.
+/// Notices, or why there is no watch: the server's answer if it refused
+/// the watch or the retries ran out, or what the transport could not send.
 pub fn drain(
     source: &mut DescribedSource,
     mut next: impl FnMut() -> Option<Wire>,
@@ -96,10 +96,11 @@ pub fn drain(
             Wire::Failed { status, body } => {
                 let body = String::from_utf8_lossy(&body);
                 return Err(match status {
-                    0 => body.into_owned(),
-                    status => format!("{status} {body}"),
+                    Some(status) => format!("{status} {body}"),
+                    None => body.into_owned(),
                 });
             }
+            Wire::Unserved(why) => return Err(why.to_string()),
             _ => {}
         }
         if let Some(request) = source.poll_request() {
