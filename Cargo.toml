@@ -24,7 +24,7 @@ insta = "1.49.0"
 ratatui = "0.30"
 regex = "1.12"
 # The condition language flotillad's `where` speaks.
-rigging-condition = { git = "https://github.com/flotilla-org/rigging", rev = "261a4460166fc79e1b6442a693f62d4e41bef8d4" }
+rigging-condition = { git = "https://github.com/flotilla-org/rigging", branch = "main" }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 serde_json = "1"
