@@ -64,7 +64,9 @@ fn count(runs: &[Range<Position>]) -> u64 {
 /// Gathers the rows and columns at runs of Positions `rows` and `cols`
 /// through `window`, which answers a run of an axis with the Keys there and,
 /// on a grouped axis, their outlines. `None` past [`COPY_LIMIT`] cells, with
-/// no window asked for.
+/// no window asked for. A run's Keys take its Positions in order, so a
+/// Window shorter than its run (one reaching past the count) gives fewer
+/// rows or columns.
 pub fn gather(
     rows: &[Range<Position>],
     cols: &[Range<Position>],
