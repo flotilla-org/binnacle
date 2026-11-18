@@ -1912,7 +1912,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rigging-condition"
 version = "0.1.0"
-source = "git+https://github.com/flotilla-org/rigging?rev=1e28bbbbb8c64a7ab9b4fe59c29331075440bdbd#1e28bbbbb8c64a7ab9b4fe59c29331075440bdbd"
+source = "git+https://github.com/flotilla-org/rigging?rev=261a4460166fc79e1b6442a693f62d4e41bef8d4#261a4460166fc79e1b6442a693f62d4e41bef8d4"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
