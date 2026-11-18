@@ -110,16 +110,22 @@ impl Keymap {
                 return Some(action.clone());
             }
             // With Ctrl or Alt held, Shift's case is not a different key:
-            // Ctrl+Shift+A arrives as `A` and takes Ctrl+A's binding.
+            // Ctrl+Shift+A arrives as `A` and takes Ctrl+Shift+a's binding,
+            // else Ctrl+A's.
             let chord = KeyModifiers::CONTROL | KeyModifiers::ALT;
             let mut lower = c.to_lowercase();
             if let (true, Some(l), None) = (
                 event.modifiers.intersects(chord),
                 lower.next(),
                 lower.next(),
-            ) && let Some(action) = self.bindings.get(&(KeyCode::Char(l), unshifted))
-            {
-                return Some(action.clone());
+            ) {
+                let held = [event.modifiers, unshifted];
+                if let Some(action) = held
+                    .iter()
+                    .find_map(|&m| self.bindings.get(&(KeyCode::Char(l), m)))
+                {
+                    return Some(action.clone());
+                }
             }
         }
         match event.code {

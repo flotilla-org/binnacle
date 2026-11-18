@@ -286,3 +286,42 @@ fn ctrl_shift_a_selects_all_as_ctrl_a_does() {
     unbound.unbind(KeyCode::Char('a'), KeyModifiers::CONTROL);
     assert_eq!(unbound.action(&press(KeyCode::Char('A'), ctrl_shift)), None);
 }
+
+#[test]
+fn a_chord_with_shift_bound_in_lower_case_beats_the_one_without() {
+    let mut keys = Keymap::default();
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    keys.bind(KeyCode::Char('z'), KeyModifiers::CONTROL, Action::Cancel);
+    keys.bind(KeyCode::Char('z'), ctrl_shift, Action::Activate);
+    // A terminal reports Ctrl+Shift+Z as `Z`.
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('Z'), ctrl_shift)),
+        Some(Action::Activate)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+        Some(Action::Cancel)
+    );
+}
+
+#[test]
+fn shift_alone_keeps_the_case_of_a_bound_character() {
+    let keys = Keymap::preset(Preset::Modes);
+    // `h` moves; Shift+H is not a move (Modes does not type).
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('H'), KeyModifiers::SHIFT)),
+        None
+    );
+    // Alt+Shift+A is Alt+a's binding when there is one.
+    let mut alt = Keymap::empty();
+    alt.bind(KeyCode::Char('a'), KeyModifiers::ALT, Action::SelectAll);
+    let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+    assert_eq!(
+        alt.action(&press(KeyCode::Char('A'), alt_shift)),
+        Some(Action::SelectAll)
+    );
+    assert_eq!(
+        alt.action(&press(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+        None
+    );
+}
