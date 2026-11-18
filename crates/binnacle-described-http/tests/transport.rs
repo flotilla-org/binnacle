@@ -189,7 +189,7 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
     let backoff = Backoff {
         initial: Duration::from_millis(300),
         max: Duration::from_secs(5),
-        settle: Duration::from_millis(200),
+        settle: Duration::from_millis(300),
     };
     let fake = fake().start().unwrap();
     // Seed 3 draws waits of about 151 ms and 156 ms, well clear of the
@@ -218,10 +218,18 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
     let bravo = keys[1];
     let survivors: Vec<_> = keys.iter().copied().filter(|&k| k != bravo).collect();
     assert_eq!(source.row_keys(), survivors, "survivors keep their Keys");
-    // The stream stayed open `settle` after synced, which reset the
-    // backoff: the next end waits up to the initial delay again, not
-    // double.
-    std::thread::sleep(backoff.settle + Duration::from_millis(100));
+    // The stream stays open `settle` after its first synced, which resets
+    // the backoff: the next end waits up to the initial delay again, not
+    // double. A resync on the way syncs again, but `settle` runs from the
+    // first.
+    std::thread::sleep(Duration::from_millis(200));
+    fake.push(Step::Resync {
+        table: "crews".into(),
+    });
+    host(&transport, &mut source, |s, e| {
+        s.status().synced && matches!(e, Event::Message(Message::Synced { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(200));
     let before = Instant::now();
     fake.push(Step::End);
     host(&transport, &mut source, |_, e| *e == Event::Ended);
@@ -733,4 +741,51 @@ fn a_bad_endpoint_or_credential_is_unserved_and_nothing_is_sent() {
     let bad_token = options(&fake).auth(Auth::Bearer("a\nb".into()));
     assert_eq!(unserved(bad_token), Some(Event::Unserved(Unserved::Auth)));
     assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn settling_leaves_a_stream_with_an_idle_timeout_open() {
+    let beating = fake().heartbeat(Duration::from_millis(50)).start().unwrap();
+    let backoff = Backoff {
+        settle: Duration::from_millis(100),
+        ..Backoff::default()
+    };
+    let options = options(&beating)
+        .backoff(backoff)
+        .idle(Some(Duration::from_millis(300)));
+    let events = watched(options, Duration::from_millis(700));
+    assert!(!events.contains(&Event::Ended), "{events:?}");
+    assert_eq!(beating.requests().len(), 1);
+}
+
+#[test]
+fn a_message_coming_slowly_a_byte_at_a_time_is_not_idle() {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let line = b"{\"type\": \"progress\", \"sequence\": 7}\n";
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut header = String::new();
+        while reader.read_line(&mut header).unwrap() > 2 {
+            header.clear();
+        }
+        stream.set_nodelay(true).unwrap();
+        let head =
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+        stream.write_all(head.as_bytes()).unwrap();
+        // 35 bytes 25 ms apart: the message takes far longer than `idle`,
+        // each byte well within it.
+        for byte in line {
+            stream.write_all(&[*byte]).unwrap();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    let options = Options::new(Endpoint::Tcp(url)).idle(Some(Duration::from_millis(150)));
+    let transport = Blocking::new(options).unwrap();
+    transport.open(source().poll_request().unwrap());
+    let progress = Event::Message(Message::Progress { sequence: Some(7) });
+    assert_eq!(transport.recv_timeout(WAIT), Some(progress));
+    assert_eq!(transport.recv_timeout(WAIT), Some(Event::Ended));
 }
