@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/initial_sizes.rs
+expression: host.frame()
+---
+  id        name        note
+1 0         Ada Lovelacenote0
+2 1         Alan        note1
+3 2         Grace Hoppernote2
+4 3         Edsger      note3

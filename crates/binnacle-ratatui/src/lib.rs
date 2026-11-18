@@ -21,6 +21,7 @@ mod pin;
 mod renderer;
 mod scrollbar;
 mod shimmer;
+mod sizes;
 mod theme;
 mod value;
 mod width;
@@ -51,6 +52,7 @@ pub use renderer::{
 };
 pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
+pub use sizes::{InitialSize, InitialSizes};
 pub use theme::{ColorSupport, Theme};
 pub use value::{ValueRenderer, WARNING_MARK, hint_style};
 use width::{fit, pad as pad_to, tail, width as text_width, write};
