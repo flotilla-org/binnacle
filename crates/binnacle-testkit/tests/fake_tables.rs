@@ -9,7 +9,9 @@ use binnacle_described::{
     Decoder, DescribedSource, Encoding, Field, FieldType, HostRequest, Message, Received, Scope,
     Wire,
 };
-use binnacle_testkit::fake_tables::{FakeTable, FakeTables, Running, Step, Stream, fetch, open};
+use binnacle_testkit::fake_tables::{
+    FakeTable, FakeTables, Running, Step, Stream, fetch, open, send,
+};
 use serde_json::{Value as Json, json};
 
 fn data(name: &str) -> PathBuf {
@@ -641,6 +643,7 @@ fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
         ],
         primary_key: Vec::new(),
         foreign_keys: Vec::new(),
+        subject: None,
     };
     let notes = FakeTable::new("notes", schema).with_rows(vec![
         row("a", "x"),
@@ -796,4 +799,93 @@ fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
         child.0.try_wait().unwrap().is_none(),
         "the end of the input does not stop the server"
     );
+}
+
+#[test]
+fn a_tables_subject_is_in_its_description_and_names_each_rows_subject() {
+    let fake = FakeTables::new()
+        .table(
+            FakeTable::from_fixture(crews())
+                .unwrap()
+                .with_subject("crew", "name"),
+        )
+        .table(
+            FakeTable::from_fixture(crews())
+                .unwrap()
+                .with_subject("crew", "nowhere"),
+        )
+        .start()
+        .unwrap();
+    let described = fetch(fake.addr(), "/tables/crews", &[]).unwrap();
+    let schema: Json = serde_json::from_slice(&described.body).unwrap();
+    assert_eq!(schema["subject"], json!({"kind": "crew", "field": "name"}));
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    let (mut stream, mut decoder) = watch(&fake, &mut source, CBOR_SEQ);
+    feed(&mut stream, &mut decoder, &mut source, |s| {
+        s.status().synced
+    });
+    let name = source.column_key("name").unwrap();
+    assert_eq!(source.subject(), Some(("crew", name)));
+    let alpha = source.row_key(&[Wire::Text("alpha".into())]).unwrap();
+    assert_eq!(source.row_subject(alpha), Some("alpha"));
+}
+
+/// Answers each request `fake` routes, over its address, and checks the
+/// handler and `requests()` saw it whole.
+fn routed(fake: &Running) {
+    let body = br#"{"verb":"stop"}"#;
+    let target = "/verbs/convoy/stop?dry=1";
+    let response = send(
+        fake.addr(),
+        "POST",
+        target,
+        &[("content-type", "application/json")],
+        body,
+    )
+    .unwrap();
+    assert_eq!(response.status, 202);
+    assert_eq!(
+        response.body,
+        br#"{"saw":"/verbs/convoy/stop?dry=1 application/json {\"verb\":\"stop\"}"}"#
+    );
+    let get = fetch(fake.addr(), "/verbs/convoy/stop", &[]).unwrap();
+    assert_eq!(get.status, 404, "only the method routed");
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].target, target);
+    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    assert_eq!(requests[0].body, body);
+    assert_eq!(requests[1].method, "GET");
+}
+
+fn router(fake: FakeTables) -> FakeTables {
+    fake.route("POST", "/verbs/convoy/stop", |request| {
+        let saw = format!(
+            "{} {} {}",
+            request.target,
+            request.header("content-type").unwrap_or_default(),
+            String::from_utf8_lossy(&request.body)
+        );
+        (202, serde_json::to_vec(&json!({ "saw": saw })).unwrap())
+    })
+}
+
+#[test]
+fn a_route_answers_a_post_with_its_status_and_body_over_tcp() {
+    let fake = router(FakeTables::new()).start().unwrap();
+    routed(&fake);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_route_answers_a_post_with_its_status_and_body_over_a_unix_socket() {
+    let dir = std::env::temp_dir().join(format!("fake-routes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake = router(FakeTables::new().unix(dir.join("tables.sock")))
+        .start()
+        .unwrap();
+    routed(&fake);
+    drop(fake);
+    let _ = std::fs::remove_dir(&dir);
 }

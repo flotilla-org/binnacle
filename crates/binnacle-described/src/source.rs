@@ -586,6 +586,22 @@ impl DescribedSource {
         self.row_ids.identity(row)
     }
 
+    /// What each row is about: the subject's address kind and the Key of
+    /// the column holding each row's address, if the schema names one.
+    pub fn subject(&self) -> Option<(&str, Key)> {
+        let subject = self.schema.as_ref()?.subject.as_ref()?;
+        Some((&subject.kind, self.column_key(&subject.field)?))
+    }
+
+    /// Row `row`'s subject address, as it came: `None` if the schema names
+    /// no subject, there is no row `row`, or its address is null or not
+    /// text.
+    pub fn row_subject(&self, row: Key) -> Option<&str> {
+        let (_, col) = self.subject()?;
+        let field = &self.column(col)?.field.name;
+        self.raw[*self.row_at.get(&row)?].get(field)?.as_str()
+    }
+
     /// The Key of the column for field `name`, if the schema has it.
     pub fn column_key(&self, name: &str) -> Option<Key> {
         let key = self.column_ids.key(name.as_bytes())?;

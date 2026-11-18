@@ -116,6 +116,7 @@ impl DescribedSource {
     /// #         fields: vec![Field::new("name", FieldType::String), Field::new("spec", FieldType::Object)],
     /// #         primary_key: vec!["name".into()],
     /// #         foreign_keys: Vec::new(),
+    /// #         subject: None,
     /// #     },
     /// #     incarnation: None,
     /// #     table: None,

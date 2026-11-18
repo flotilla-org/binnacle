@@ -33,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 25u
+#define BINNACLE_ABI_VERSION 26u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -2334,6 +2334,19 @@ int binnacle_described_column(BinnacleDescribedSource *src, uint64_t col, Binnac
  * there is no column col. */
 int binnacle_described_property(BinnacleDescribedSource *src, uint64_t col, BinnacleText name,
                                 BinnacleText *json_out);
+
+/* What each row is about, if the table's description names it: the address
+ * kind of its subject into *kind_out, and the Key of the column holding each
+ * row's canonical address into *col_out. That column is an ordinary one. 0
+ * if the description names no subject, or a field the table lacks. */
+int binnacle_described_source_subject(BinnacleDescribedSource *src, BinnacleText *kind_out,
+                                      uint64_t *col_out);
+
+/* The canonical address of the subject of the row with Key row, into *out.
+ * 0 if the table has no subject or no row row, or the row's address is null
+ * or not text. */
+int binnacle_described_source_row_subject(BinnacleDescribedSource *src, uint64_t row,
+                                          BinnacleText *out);
 
 /* Column col's Distinct Values, for a one-of filter, into out: at most limit
  * of them, those containing search ignoring case (all when it is empty, and

@@ -24,6 +24,9 @@
 //!   and every `where` clause but those reading only it. A watch sends
 //!   them again as they change, `values` only the entries that changed.
 //!
+//! - A route ([`FakeTables::route`]) answers any other request with what
+//!   its handler gives, such as a host's POST.
+//!
 //! The script starts playing once a watch has synced; [`Running::push`]
 //! adds steps to it as a test goes.
 
@@ -51,7 +54,7 @@ use binnacle_described::{
 use serde_json::json;
 
 pub use data::{FakeTable, ORDERED, Refused, Where};
-pub use http::{Addr, Request, Response, Stream, fetch, open};
+pub use http::{Addr, Request, Response, Stream, fetch, open, send};
 pub use script::{Step, parse_script};
 
 use http::Conn;
@@ -72,6 +75,24 @@ pub struct FakeTables {
     heartbeat: Duration,
     fail: Vec<u16>,
     answer_in: Option<Encoding>,
+    routes: Vec<Route>,
+}
+
+/// What a route's handler answers a request with: a status and a body.
+pub type Handler = dyn Fn(&Request) -> (u16, Vec<u8>) + Send + Sync;
+
+/// A request a test answers itself: its method and path, and the handler.
+#[derive(Clone)]
+struct Route {
+    method: String,
+    path: String,
+    handler: Arc<Handler>,
+}
+
+impl std::fmt::Debug for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Route({} {})", self.method, self.path)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +120,7 @@ impl FakeTables {
             heartbeat: Duration::from_secs(1),
             fail: Vec::new(),
             answer_in: None,
+            routes: Vec::new(),
         }
     }
 
@@ -160,6 +182,23 @@ impl FakeTables {
         self
     }
 
+    /// Answers each `method` request for `path` (its query aside) with the
+    /// status and body `handler` gives it, as `application/json`, in place
+    /// of the fake's own answer.
+    pub fn route(
+        mut self,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        handler: impl Fn(&Request) -> (u16, Vec<u8>) + Send + Sync + 'static,
+    ) -> FakeTables {
+        self.routes.push(Route {
+            method: method.into(),
+            path: path.into(),
+            handler: Arc::new(handler),
+        });
+        self
+    }
+
     pub fn start(self) -> io::Result<Running> {
         let (listener, addr) = match &self.listen {
             Listen::Tcp(addr) => {
@@ -188,6 +227,7 @@ impl FakeTables {
                 sequence: 1,
                 fail: self.fail.into(),
                 answer_in: self.answer_in,
+                routes: self.routes,
                 page: self.page,
                 heartbeat: self.heartbeat,
                 next: 0,
@@ -345,6 +385,7 @@ struct State {
     fail: VecDeque<u16>,
     /// The encoding every rows request is answered in, if not as asked.
     answer_in: Option<Encoding>,
+    routes: Vec<Route>,
     page: usize,
     heartbeat: Duration,
     next: u64,
@@ -824,8 +865,19 @@ fn serve(mut conn: Conn, shared: Arc<Shared>) {
     let Ok(request) = http::read_request(&mut conn) else {
         return;
     };
-    shared.lock().requests.push(request.clone());
+    let route = {
+        let mut state = shared.lock();
+        state.requests.push(request.clone());
+        (state.routes.iter())
+            .find(|r| r.method == request.method && r.path == request.path())
+            .map(|r| Arc::clone(&r.handler))
+    };
     let json = "application/json";
+    if let Some(handler) = route {
+        let (status, body) = handler(&request);
+        let _ = http::respond(&mut conn, status, json, &body);
+        return;
+    }
     if request.method != "GET" {
         let _ = http::respond(
             &mut conn,
@@ -841,6 +893,7 @@ fn serve(mut conn: Conn, shared: Arc<Shared>) {
                 method: String::new(),
                 target: format!("?{p}"),
                 headers: Vec::new(),
+                body: Vec::new(),
                 at: Instant::now(),
             };
             request.query().pop().map(|(k, _)| k).unwrap_or_default()

@@ -606,6 +606,70 @@ static void described_zone(void) {
   binnacle_grid_free(other);
 }
 
+/* A table whose description names its subject: its kind and the column of
+ * each row's address, which is an ordinary column; a row with a null address
+ * has none, as has every row of a table naming no subject. */
+static void described_subject(void) {
+  BinnacleDescribedSource *src =
+      binnacle_described_source_new(ctext("convoys"), ctext("flotilla"), NULL, 0);
+  CHECK(src != NULL);
+  BinnacleAxisConfig rows = {.count = 0, .default_size = 1, .header = 1, .gap = 0};
+  BinnacleAxisConfig cols = {.count = 0, .default_size = 10, .header = 1, .gap = 0};
+  BinnacleGrid *grid = binnacle_grid_new(rows, cols);
+  CHECK(grid != NULL);
+  BinnacleText kind;
+  uint64_t col;
+  CHECK(!binnacle_described_source_subject(src, &kind, &col));
+  described_line(src, grid,
+                 "{\"type\":\"table\",\"table\":\"convoys\",\"schema\":{\"fields\":["
+                 "{\"name\":\"id\",\"type\":\"integer\"},"
+                 "{\"name\":\"address\",\"type\":\"string\"}],\"primaryKey\":[\"id\"],"
+                 "\"subject\":{\"kind\":\"convoy\",\"field\":\"address\"}}}");
+  described_line(src, grid,
+                 "{\"type\":\"rows\",\"rows\":[{\"id\":1,\"address\":\"wheelhouse/c1\"},"
+                 "{\"id\":2,\"address\":null}]}");
+  described_line(src, grid, "{\"type\":\"synced\"}");
+
+  CHECK(binnacle_described_source_subject(src, &kind, &col));
+  CHECK(text_is(kind, "convoy"));
+  BinnacleColumnInfo info = {.size = sizeof info};
+  CHECK(binnacle_described_column(src, col, &info) && text_is(info.name, "address"));
+  CHECK(!binnacle_described_source_subject(src, NULL, &col));
+  CHECK(!binnacle_described_source_subject(src, &kind, NULL));
+  CHECK(!binnacle_described_source_subject(NULL, &kind, &col));
+
+  BinnacleSnapshot snap;
+  CHECK(binnacle_grid_snapshot(grid, &snap));
+  const BinnacleAxisSnapshot *r = &snap.axes[BINNACLE_ROWS];
+  CHECK(r->strip_len == 2 && snap.axes[BINNACLE_COLS].strip_len == 2);
+  uint64_t keys[2] = {r->strip[0].key, r->strip[1].key};
+  BinnacleText address;
+  int addressed = 0, unaddressed = 0;
+  for (size_t i = 0; i < 2; i++) {
+    if (binnacle_described_source_row_subject(src, keys[i], &address)) {
+      CHECK(text_is(address, "wheelhouse/c1"));
+      addressed++;
+    } else {
+      unaddressed++;
+    }
+  }
+  CHECK(addressed == 1 && unaddressed == 1);
+  CHECK(!binnacle_described_source_row_subject(src, keys[0], NULL));
+  CHECK(!binnacle_described_source_row_subject(src, 7, &address));
+
+  /* The table described again naming no subject. */
+  described_line(src, grid,
+                 "{\"type\":\"table\",\"table\":\"convoys\",\"schema\":{\"fields\":["
+                 "{\"name\":\"id\",\"type\":\"integer\"},"
+                 "{\"name\":\"address\",\"type\":\"string\"}],\"primaryKey\":[\"id\"]}}");
+  CHECK(!binnacle_described_source_subject(src, &kind, &col));
+  for (size_t i = 0; i < 2; i++)
+    CHECK(!binnacle_described_source_row_subject(src, keys[i], &address));
+
+  binnacle_described_source_free(src);
+  binnacle_grid_free(grid);
+}
+
 int main(int argc, char **argv) {
   CHECK(argc == 2);
   CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
@@ -1212,6 +1276,7 @@ int main(int argc, char **argv) {
   layout();
   described(argv[1]);
   described_zone();
+  described_subject();
   printf("ok\n");
   return 0;
 }

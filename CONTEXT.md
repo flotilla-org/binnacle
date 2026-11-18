@@ -60,6 +60,10 @@ _Avoid_: Remote table, schema table, dynamic table
 What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed clauses in the condition language flotillad speaks (`rigging-condition`), sent as `scope` clauses. A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers as `where` clauses, each where one keeps every row the Condition keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the `where` clauses. The watch's `count` message gives the rows' Totals (the rows the `scope` clauses keep), and its `values` messages the Distinct Values of each column that allows `in`, so the source asks for the watch again once the columns are known.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
+**Subject**:
+What each row of a Described Table is about, when its description names one: the address kind (ADR 0066) of the rows' subjects, and the field holding each row's canonical address. That field is an ordinary column, shown, sorted and filtered like any other; a row whose address is null or not text has none. A subject naming a field the table lacks is none, and the table loads as if it named none. `Subject` in `binnacle-described`, read through `DescribedSource::subject` and `DescribedSource::row_subject`.
+_Avoid_: Row address (for the whole), target, entity
+
 **Described Source Handle**:
 A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
 _Avoid_: Described grid, table handle

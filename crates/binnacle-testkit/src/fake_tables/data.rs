@@ -5,7 +5,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use binnacle_described::{Decoder, Encoding, Field, FieldType, Message, Row, Schema, Wire};
+use binnacle_described::{
+    Decoder, Encoding, Field, FieldType, Message, Row, Schema, Subject, Wire,
+};
 use rigging_condition::{
     CheckError, Checked, Condition as Clause, Lookup, Path as ConditionPath, Row as ConditionRow,
     Schema as ConditionSchema, Timestamp, Type, Value as ConditionValue,
@@ -41,6 +43,16 @@ impl FakeTable {
 
     pub fn with_rows(mut self, rows: Vec<Row>) -> FakeTable {
         self.rows = rows;
+        self
+    }
+
+    /// Names `field` as holding each row's subject address, of address
+    /// kind `kind`, in its description: a field the table lacks too.
+    pub fn with_subject(mut self, kind: impl Into<String>, field: impl Into<String>) -> FakeTable {
+        self.schema.subject = Some(Subject {
+            kind: kind.into(),
+            field: field.into(),
+        });
         self
     }
 
@@ -131,6 +143,7 @@ impl FakeTable {
             ],
             primary_key: vec!["id".into()],
             foreign_keys: Vec::new(),
+            subject: None,
         };
         let rows = (0..rows as u64).map(generated_row).collect();
         FakeTable::new(name, schema).with_rows(rows)
