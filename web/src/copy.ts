@@ -5,7 +5,8 @@
 // its label from the row Header Band: a Summary Item's label without its
 // indent or disclosure mark, a Leaf's own label if the source gives one.
 // An open Group Item whose Subtotal is placed copies no figures, as it
-// draws none.
+// draws none. These are the rules `binnacle_memory::copy` holds for the
+// Rust hosts (crates/binnacle-memory/src/copy.rs).
 
 import type { Run } from "./effects";
 import { cellText, type RendererChoice } from "./renderer";

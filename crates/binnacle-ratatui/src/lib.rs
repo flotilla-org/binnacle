@@ -30,7 +30,7 @@ pub use binnacle_memory::column_filter::{EMPTY_LABEL, NULL_LABEL, value_label};
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
 pub use context::{NextFrame, RenderContext};
-pub use copy::{CopiedRow, copy_text};
+pub use copy::{COPY_LIMIT, ContentText, Copied, CopiedRow, CopyText, copy_text, gather};
 pub use corner::corner_level_at;
 pub use filter::{
     ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,

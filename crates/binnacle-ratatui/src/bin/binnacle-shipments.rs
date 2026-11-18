@@ -78,9 +78,9 @@ use binnacle_core::{
 use binnacle_group::{Figure, GroupedMemory, SUMMARY_KEY_BIT};
 use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar,
-    FindStatus, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, RowItem,
-    Theme, begin_frame, column_disclosure_at, copy_text, corner_level_at, disclosure_at,
+    COPY_LIMIT, Chooser, ColorSupport, ColumnFilter, Content, ContentText, Control, Controls,
+    FindBar, FindStatus, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext,
+    RowItem, Theme, begin_frame, column_disclosure_at, corner_level_at, disclosure_at, gather,
     render_conditions, render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
@@ -382,29 +382,18 @@ struct Copy {
     labels: bool,
 }
 
-/// The text of `copy` as the table draws it.
+/// The text of `copy` as the table draws it, with how many rows it holds;
+/// `None` past `COPY_LIMIT` cells.
 fn copied(
     copy: &Copy,
     source: &mut GroupedMemory<Shipment>,
     rows: &[Shipment],
     grouping: Option<&Grouping>,
-) -> (usize, String) {
-    let mut items = Vec::new();
-    for run in &copy.rows {
-        let window = source.window(rows, Axis::Rows, run.clone());
-        let mut outlines = window.outlines.map(Vec::into_iter);
-        for (key, position) in window.keys.into_iter().zip(run.clone()) {
-            let outline = outlines.as_mut().and_then(Iterator::next);
-            items.push(CopiedRow {
-                key,
-                position,
-                outline,
-            });
-        }
-    }
-    let cols: Vec<Key> = (copy.cols.iter())
-        .flat_map(|run| source.window(rows, Axis::Cols, run.clone()).keys)
-        .collect();
+) -> Option<(usize, String)> {
+    let copied = gather(&copy.rows, &copy.cols, copy.labels, |axis, run| {
+        let window = source.window(rows, axis, run);
+        (window.keys, window.outlines)
+    })?;
     let text = Text {
         rows,
         source,
@@ -412,7 +401,10 @@ fn copied(
         marked: &HashSet::new(),
         unmatched: &HashSet::new(),
     };
-    (items.len(), copy_text(&text, &items, &cols, copy.labels))
+    Some((
+        copied.rows.len(),
+        copied.text(&ContentText(&text), grouping),
+    ))
 }
 
 /// Puts `text` on the terminal's clipboard with OSC 52.
@@ -622,10 +614,12 @@ fn main() -> io::Result<()> {
                 }
                 if let Some(copy) = copy {
                     let grouping = grid.snapshot().applied_view().grouping.clone();
-                    let (n, text) = copied(&copy, &mut source, &rows, grouping.as_ref());
-                    note = match clipboard(&text) {
-                        Ok(()) => format!("copied {n} rows"),
-                        Err(e) => format!("copy failed: {e}"),
+                    note = match copied(&copy, &mut source, &rows, grouping.as_ref()) {
+                        Some((n, text)) => match clipboard(&text) {
+                            Ok(()) => format!("copied {n} rows"),
+                            Err(e) => format!("copy failed: {e}"),
+                        },
+                        None => format!("too many cells to copy (over {COPY_LIMIT})"),
                     };
                 }
                 let fitted = column_tiers(grid.snapshot().applied_view().grouping.as_ref());

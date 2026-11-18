@@ -1,6 +1,7 @@
 //! binnacle-memory: Table Sources for hosts whose data lives in memory.
 
 pub mod column_filter;
+pub mod copy;
 mod interner;
 mod memory_source;
 mod pump;
