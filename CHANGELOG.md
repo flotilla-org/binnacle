@@ -19,6 +19,7 @@
 
 ### Added
 
+- **memory/ratatui:** `binnacle_memory::copy` holds the copy rules every host follows, as `web/src/copy.ts` does: `gather` resolves a `CopyRequested`'s runs through the source's Windows (nothing past `COPY_LIMIT` cells), and `copy_text` writes the cells a `CopyText` draws as tab-separated lines; `binnacle_ratatui::copy_text` wraps it over `Content`, and `binnacle-shipments` copies an open Group Item whose Subtotal is placed without figures, as the web does ([#416](https://github.com/flotilla-org/binnacle/issues/416)).
 - **ratatui:** `InitialSizes` seeds a column's width or a row's height when its Key first appears, as the web widget's `initialColumnWidth` and `initialRowHeight` do: the host gives it a function from Key to `InitialSize` (`Default`, `Cells`, `Fit`, `Fill`) and calls `settle` each frame after `begin_frame`, laying the frame out again while it returns true. A fit measures the header and the rows in view through the Cell Renderers (`fit_width`); a fill takes an equal share of the room left once every item is laid out, never shrinking an item, and an overflowing axis fills nothing; a Size Override already there wins. The demo's records table uses it ([#97](https://github.com/flotilla-org/binnacle/issues/97)).
 - **core:** `Grid::conditions` and `Grid::support` read an axis's conditions and an item's support as `Snapshot::conditions` and `Snapshot::support` do, without taking a Snapshot (beside `Grid::applied_view`), so a host can read them between frames without taking the damage the next Snapshot reports.
 
