@@ -1061,6 +1061,53 @@ pub unsafe extern "C" fn binnacle_described_property(
 }
 
 /// # Safety
+/// `src` is NULL or a live handle; `kind_out` and `col_out` are NULL or
+/// valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_described_source_subject(
+    src: *mut BinnacleDescribedSource,
+    kind_out: *mut BinnacleText,
+    col_out: *mut u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_source(src, |h| {
+            if kind_out.is_null() || col_out.is_null() {
+                return None;
+            }
+            let (kind, col) = h.source.subject()?;
+            let kind = kind.to_owned();
+            h.clear();
+            let kind = h.keep(kind);
+            write_out(col_out, col.0)?;
+            write_out(kind_out, kind)
+        })
+    }
+}
+
+/// # Safety
+/// `src` is NULL or a live handle; `out` is NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_described_source_row_subject(
+    src: *mut BinnacleDescribedSource,
+    row: u64,
+    out: *mut BinnacleText,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_source(src, |h| {
+            if out.is_null() {
+                return None;
+            }
+            let address = h.source.row_subject(Key(row))?.to_owned();
+            h.clear();
+            let address = h.keep(address);
+            write_out(out, address)
+        })
+    }
+}
+
+/// # Safety
 /// `src` and `grid` are NULL or live handles; `search`'s non-NULL `data` is
 /// valid for its `len` reads; `out` is NULL or valid for a write.
 #[unsafe(no_mangle)]
@@ -1138,9 +1185,11 @@ mod tests {
     type Src = *mut BinnacleDescribedSource;
     type Call = Box<dyn Fn(Src, *mut BinnacleGrid) -> i32>;
 
-    /// A source told of a one-column table, and the Grid it drives.
+    /// A source told of a table of an `x` and its subject's address `a`,
+    /// and its one row, and the Grid it drives.
     fn described() -> (Src, *mut BinnacleGrid) {
-        let table = r#"{"type":"table","table":"t","schema":{"fields":[{"name":"x","type":"integer"}],"primaryKey":["x"]}}"#;
+        let table = r#"{"type":"table","table":"t","schema":{"fields":[{"name":"x","type":"integer"},{"name":"a","type":"string"}],"primaryKey":["x"],"subject":{"kind":"thing","field":"a"}}}"#;
+        let rows = r#"{"type":"rows","rows":[{"x":1,"a":"things/one"}]}"#;
         let grid = Box::into_raw(BinnacleGrid::from_grid(Grid::new(
             AxisConfig::new(0, 1.0),
             AxisConfig::new(0, 8.0),
@@ -1148,8 +1197,16 @@ mod tests {
         // SAFETY: the texts outlive the calls; the handles are live.
         unsafe {
             let src = binnacle_described_source_new(text("t"), text("ns"), std::ptr::null(), 0);
-            let ok = binnacle_described_source_receive(src, grid, 1, table.as_ptr(), table.len());
-            assert_eq!(ok, 1);
+            for message in [table, rows] {
+                let ok = binnacle_described_source_receive(
+                    src,
+                    grid,
+                    1,
+                    message.as_ptr(),
+                    message.len(),
+                );
+                assert_eq!(ok, 1);
+            }
             (src, grid)
         }
     }
@@ -1233,6 +1290,19 @@ mod tests {
                         text("type"),
                         &mut BinnacleText::default(),
                     )
+                }),
+            ),
+            (
+                "subject",
+                Box::new(|s, _| unsafe {
+                    binnacle_described_source_subject(s, &mut BinnacleText::default(), &mut 0)
+                }),
+            ),
+            (
+                "row_subject",
+                Box::new(|s, _| unsafe {
+                    let row = (*s).source().row_keys()[0].0;
+                    binnacle_described_source_row_subject(s, row, &mut BinnacleText::default())
                 }),
             ),
             (

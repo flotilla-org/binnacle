@@ -183,6 +183,7 @@ fn table(fields: &[(String, Kind)], primary_key: &[String]) -> Message {
             fields: all,
             primary_key: primary_key.to_vec(),
             foreign_keys: Vec::new(),
+            subject: None,
         },
         incarnation: Some("durable".into()),
         table: None,

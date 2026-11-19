@@ -88,13 +88,15 @@ impl Write for Conn {
     }
 }
 
-/// A request the fake took: its method, target (path and query) and
-/// headers, names lowercased, in order, and when it came.
+/// A request the fake took: its method, target (path and query),
+/// headers, names lowercased, in order, its body (as `content-length`
+/// gives it, else empty) and when it came.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub method: String,
     pub target: String,
     pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
     pub at: Instant,
 }
 
@@ -154,10 +156,13 @@ fn decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Reads a request's head from `conn`.
 /// The longest request head the fake reads.
 const MAX_HEAD: u64 = 64 << 10;
 
+/// The longest request body the fake reads.
+const MAX_BODY: u64 = 16 << 20;
+
+/// Reads a request from `conn`: its head, then a body of `content-length`.
 pub(crate) fn read_request(conn: &mut Conn) -> io::Result<Request> {
     let mut reader = BufReader::new(conn.take(MAX_HEAD));
     let mut line = String::new();
@@ -186,10 +191,19 @@ pub(crate) fn read_request(conn: &mut Conn) -> io::Result<Request> {
             ));
         }
     }
+    let length = match headers.iter().find(|(n, _)| n == "content-length") {
+        None => 0,
+        Some((_, v)) => (v.parse().ok().filter(|&n| n <= MAX_BODY))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a bad content-length"))?,
+    };
+    reader.get_mut().set_limit(length);
+    let mut body = vec![0; length as usize];
+    reader.read_exact(&mut body)?;
     Ok(Request {
         method,
         target,
         headers,
+        body,
         at: Instant::now(),
     })
 }
@@ -332,13 +346,29 @@ impl Stream {
 /// Sends `GET target` to `addr` with `headers` (and `Host: localhost`),
 /// and reads the response's head.
 pub fn open(addr: &Addr, target: &str, headers: &[(&str, &str)]) -> io::Result<Stream> {
+    start(addr, "GET", target, headers, None)
+}
+
+/// Sends `method target` with `headers`, and `body` with its
+/// `content-length` if any, and reads the response's head.
+fn start(
+    addr: &Addr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> io::Result<Stream> {
     let mut conn = Conn::connect(addr)?;
-    let mut head = format!("GET {target} HTTP/1.1\r\nhost: localhost\r\n");
+    let mut head = format!("{method} {target} HTTP/1.1\r\nhost: localhost\r\n");
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
+    if let Some(body) = body {
+        head.push_str(&format!("content-length: {}\r\n", body.len()));
+    }
     head.push_str("connection: close\r\n\r\n");
     conn.write_all(head.as_bytes())?;
+    conn.write_all(body.unwrap_or_default())?;
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -368,7 +398,22 @@ pub fn open(addr: &Addr, target: &str, headers: &[(&str, &str)]) -> io::Result<S
 
 /// Sends `GET target` and reads the whole response.
 pub fn fetch(addr: &Addr, target: &str, headers: &[(&str, &str)]) -> io::Result<Response> {
-    let mut stream = open(addr, target, headers)?;
+    read_whole(open(addr, target, headers)?)
+}
+
+/// Sends `method target` with `headers` and `body`, and reads the whole
+/// response.
+pub fn send(
+    addr: &Addr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> io::Result<Response> {
+    read_whole(start(addr, method, target, headers, Some(body))?)
+}
+
+fn read_whole(mut stream: Stream) -> io::Result<Response> {
     let body = stream.read_to_end()?;
     Ok(Response {
         status: stream.status,

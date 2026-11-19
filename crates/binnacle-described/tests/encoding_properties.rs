@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use binnacle_described::{
-    Field, ForeignKey, Message, RowsMessage, Schema, TableMessage, Wire, decode_cbor_item,
+    Field, ForeignKey, Message, RowsMessage, Schema, Subject, TableMessage, Wire, decode_cbor_item,
     decode_json_line, encode_cbor_item, encode_json_line,
 };
 use hegel::generators as gs;
@@ -104,11 +104,19 @@ fn message(tc: &TestCase, cbor: bool) -> Message {
                 }],
                 _ => Vec::new(),
             };
+            let subject = match names.last() {
+                Some(last) if tc.draw(gs::booleans()) => Some(Subject {
+                    kind: tc.draw(gs::text().max_size(4)),
+                    field: last.clone(),
+                }),
+                _ => None,
+            };
             Message::Table(TableMessage {
                 schema: Schema {
                     fields,
                     primary_key: names.into_iter().take(1).collect(),
                     foreign_keys,
+                    subject,
                 },
                 incarnation: tc.draw(gs::optional(gs::sampled_from(vec!["durable".to_owned()]))),
                 table: tc.draw(gs::optional(gs::text().max_size(4))),
@@ -212,6 +220,7 @@ fn messages_are_written_under_the_wires_own_names() {
             fields: Vec::new(),
             primary_key: vec!["id".into()],
             foreign_keys: Vec::new(),
+            subject: None,
         },
         incarnation: Some("durable".into()),
         table: None,

@@ -217,6 +217,7 @@ fn numbered(n: i64, load: impl Fn(i64) -> i64) -> (Message, Message) {
             ],
             primary_key: vec!["id".into()],
             foreign_keys: Vec::new(),
+            subject: None,
         },
         incarnation: Some("durable".into()),
         table: None,

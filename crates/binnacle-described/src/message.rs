@@ -87,6 +87,16 @@ pub struct Schema {
     /// The names of the fields that identify a row.
     pub primary_key: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>,
+    /// What each row is about, if the table names it.
+    pub subject: Option<Subject>,
+}
+
+/// A table's subject: the address kind (ADR 0066) of what each row is
+/// about, and the field that holds its canonical address.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Subject {
+    pub kind: String,
+    pub field: String,
 }
 
 /// The type a field declares for its values.
@@ -305,15 +315,22 @@ impl Schema {
             }
         })
         .collect();
+        // A subject naming a field the table lacks is none.
+        let subject = (object.get("subject")).and_then(|subject| {
+            let text = |name: &str| subject.get(name).and_then(Json::as_str).map(String::from);
+            let (kind, field) = (text("kind")?, text("field")?);
+            (fields.iter().any(|f| f.name == field)).then_some(Subject { kind, field })
+        });
         Ok(Schema {
             fields,
             primary_key: names(object.get("primaryKey")),
             foreign_keys,
+            subject,
         })
     }
 
     /// The schema as JSON, under the wire's names (`fields`, `primaryKey`,
-    /// `foreignKeys`), each field written from its properties, so those
+    /// `foreignKeys`, `subject`), each field written from its properties, so those
     /// this crate does not model survive.
     pub fn to_json(&self) -> Json {
         let fields = (self.fields.iter())
@@ -336,6 +353,10 @@ impl Schema {
         object.insert("fields".into(), Json::Array(fields));
         object.insert("primaryKey".into(), texts(&self.primary_key));
         object.insert("foreignKeys".into(), Json::Array(foreign_keys));
+        if let Some(subject) = &self.subject {
+            let subject = serde_json::json!({"kind": subject.kind, "field": subject.field});
+            object.insert("subject".into(), subject);
+        }
         Json::Object(object)
     }
 
