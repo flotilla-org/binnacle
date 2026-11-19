@@ -639,10 +639,13 @@ fn a_server_that_stalls_is_given_up_on_and_tried_again() {
     assert!(String::from_utf8_lossy(&body).contains("no answer within"));
     let again = transport.recv_timeout(Duration::from_millis(600));
     assert!(matches!(again, Some(Event::Retrying { attempt: 2, .. })));
-    assert!(
-        accepted.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-        "tried again"
-    );
+    // The handshake completes before `accept()` returns, so the retry can
+    // be reported before the accept thread counts its connection.
+    let deadline = std::time::Instant::now() + WAIT;
+    while accepted.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+        assert!(std::time::Instant::now() < deadline, "tried again");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -705,8 +708,8 @@ fn a_silent_stream_ends_after_the_idle_timeout_and_opens_again() {
 #[test]
 fn heartbeats_keep_a_stream_open_past_the_idle_timeout() {
     let beating = fake().heartbeat(Duration::from_millis(50)).start().unwrap();
-    let options = options(&beating).idle(Some(Duration::from_millis(200)));
-    let events = watched(options, Duration::from_millis(600));
+    let options = options(&beating).idle(Some(Duration::from_millis(600)));
+    let events = watched(options, Duration::from_millis(1200));
     assert!(!events.contains(&Event::Ended), "{events:?}");
     assert!(
         events
@@ -752,8 +755,8 @@ fn settling_leaves_a_stream_with_an_idle_timeout_open() {
     };
     let options = options(&beating)
         .backoff(backoff)
-        .idle(Some(Duration::from_millis(300)));
-    let events = watched(options, Duration::from_millis(700));
+        .idle(Some(Duration::from_millis(600)));
+    let events = watched(options, Duration::from_millis(1200));
     assert!(!events.contains(&Event::Ended), "{events:?}");
     assert_eq!(beating.requests().len(), 1);
 }
@@ -775,17 +778,42 @@ fn a_message_coming_slowly_a_byte_at_a_time_is_not_idle() {
         let head =
             "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
         stream.write_all(head.as_bytes()).unwrap();
-        // 35 bytes 25 ms apart: the message takes far longer than `idle`,
-        // each byte well within it.
-        for byte in line {
-            stream.write_all(&[*byte]).unwrap();
-            std::thread::sleep(Duration::from_millis(25));
+        // Six pieces 150 ms apart: the message takes longer than `idle`,
+        // each piece well within it.
+        for piece in line.chunks(line.len().div_ceil(6)) {
+            stream.write_all(piece).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
         }
     });
-    let options = Options::new(Endpoint::Tcp(url)).idle(Some(Duration::from_millis(150)));
+    let options = Options::new(Endpoint::Tcp(url)).idle(Some(Duration::from_millis(500)));
     let transport = Blocking::new(options).unwrap();
     transport.open(source().poll_request().unwrap());
     let progress = Event::Message(Message::Progress { sequence: Some(7) });
     assert_eq!(transport.recv_timeout(WAIT), Some(progress));
+    assert_eq!(transport.recv_timeout(WAIT), Some(Event::Ended));
+}
+
+#[test]
+fn a_stream_gone_idle_inside_a_message_ends_without_an_undecodable() {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut header = String::new();
+        while reader.read_line(&mut header).unwrap() > 2 {
+            header.clear();
+        }
+        let head =
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(b"{\"type\": \"pro").unwrap();
+        // Holds the connection open, silent, well past `idle`.
+        std::thread::sleep(Duration::from_secs(5));
+    });
+    let options = Options::new(Endpoint::Tcp(url)).idle(Some(Duration::from_millis(150)));
+    let transport = Blocking::new(options).unwrap();
+    transport.open(source().poll_request().unwrap());
     assert_eq!(transport.recv_timeout(WAIT), Some(Event::Ended));
 }

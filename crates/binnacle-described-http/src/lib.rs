@@ -450,7 +450,9 @@ impl Transport {
         // initial delay: `settle` after the stream's `synced`.
         let mut heard = Instant::now();
         let mut settles = None;
-        loop {
+        // Whether the body came to its end, rather than an idle timeout or
+        // a broken connection cutting it short.
+        let complete = loop {
             let idles = (self.options.idle).and_then(|idle| heard.checked_add(idle));
             let frame = match idles.into_iter().chain(settles).min() {
                 // Reading a frame is cancel-safe: one cut short loses nothing.
@@ -463,15 +465,17 @@ impl Transport {
                             self.pace().delay = self.options.backoff.initial;
                         }
                         if idles.is_some_and(|at| at <= now) {
-                            break;
+                            break false;
                         }
                         continue;
                     }
                 },
                 None => body.frame().await,
             };
-            let Some(Ok(frame)) = frame else {
-                break;
+            let frame = match frame {
+                Some(Ok(frame)) => frame,
+                Some(Err(_)) => break false,
+                None => break true,
             };
             heard = Instant::now();
             if let Ok(data) = frame.into_data() {
@@ -480,8 +484,10 @@ impl Transport {
                     self.emit(message, &mut settles, emit);
                 }
             }
-        }
-        if let Some(last) = decoder.finish() {
+        };
+        // A stream cut short ends inside an item that will never be whole:
+        // drop it rather than report it as undecodable.
+        if complete && let Some(last) = decoder.finish() {
             self.emit(last, &mut settles, emit);
         }
         self.pace().wait = true;
