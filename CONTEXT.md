@@ -64,6 +64,14 @@ _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 What each row of a Described Table is about, when its description names one: the address kind (ADR 0066) of the rows' subjects, and the field holding each row's canonical address. That field is an ordinary column, shown, sorted and filtered like any other; a row whose address is null or not text has none. A subject naming a field the table lacks is none, and the table loads as if it named none. `Subject` in `binnacle-described`, read through `DescribedSource::subject` and `DescribedSource::row_subject`.
 _Avoid_: Row address (for the whole), target, entity
 
+**Parent**:
+The row a Described Table row sits under in the tree a surface shows (an agent session under its convoy, a convoy under its project), named by a foreign key whose `relation` is `parent`. A key relates a row only where all its fields are non-null, so a table may give several parent keys and each row the first one it sets. Nothing points back from parent to child: a surface follows the keys. `DescribedSource::row_parent`.
+_Avoid_: Owner, container
+
+**Facet**:
+One way a Described Table row can be opened, from the description's `facets`: a recipe (`cleat-session`, `agent-session`, `jackstay`, `url`, `command`; open), the columns holding the recipe's fields or a command line of templates, and which states mean it can be reached. A row's Facet opens the row its `facet-of` key refers to when that key relates it, else the row's own Subject. A table whose description has Facets is a facet table; one naming a Subject is a subject table, and the listing (`GET /tables`) marks both. `Facet` and `Listing` in `binnacle-described`, read in a row through `DescribedSource::row_facets`.
+_Avoid_: Link, action, view (a Facet opens; starting and resuming are verbs)
+
 **Described Source Handle**:
 A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
 _Avoid_: Described grid, table handle

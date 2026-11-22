@@ -2,7 +2,7 @@
 //! table's stream carries, each parsed once against its field's type.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -21,8 +21,9 @@ use binnacle_memory::{
 };
 
 use crate::clause::{clauses, native_sent};
+use crate::facet::{self, ADDRESS, Endpoint, Facet, Relation};
 use crate::keys::StableKeys;
-use crate::message::{Category, Field, FieldType, Message, Row, RowsMessage, Schema};
+use crate::message::{Category, Field, FieldType, ForeignKey, Message, Row, RowsMessage, Schema};
 use crate::scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
 use crate::wire::{Wire, deterministic_cbor};
 
@@ -35,6 +36,46 @@ pub struct Reference {
     /// The table, `None` for this one.
     pub resource: Option<String>,
     pub field: String,
+}
+
+/// The row a row's foreign key refers to: the key, and the values it holds
+/// in the row, one for each of the key's fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Related<'a> {
+    pub key: &'a ForeignKey,
+    pub values: Vec<&'a Wire>,
+}
+
+impl Related<'_> {
+    /// The table referred to, `None` for this one.
+    pub fn resource(&self) -> Option<&str> {
+        self.key.resource.as_deref()
+    }
+}
+
+/// One of a row's Facets, read in that row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowFacet<'a> {
+    pub facet: &'a Facet,
+    /// What it opens: the row the row's `facet-of` key refers to, or
+    /// `None` for the row's own subject.
+    pub of: Option<Related<'a>>,
+    pub opening: Opening<'a>,
+    /// Whether it can be reached: its state is one of its `reachable`
+    /// values, or it lists none.
+    pub reachable: bool,
+    /// Why it can't be reached, when it can't and the row says.
+    pub reason: Option<&'a str>,
+}
+
+/// What a row gives a Facet's recipe.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Opening<'a> {
+    /// Each of the recipe's fields the row holds, by the recipe's name for
+    /// it; one null in the row is left out.
+    Endpoint(BTreeMap<&'a str, &'a Wire>),
+    /// The command line, its templates filled from the row.
+    Command(Vec<String>),
 }
 
 /// One column of a Described Table: its field, as the schema describes it.
@@ -600,6 +641,88 @@ impl DescribedSource {
         let (_, col) = self.subject()?;
         let field = &self.column(col)?.field.name;
         self.raw[*self.row_at.get(&row)?].get(field)?.as_str()
+    }
+
+    /// Row `row` as it came, by field name.
+    fn raw_row(&self, row: Key) -> Option<&Row> {
+        Some(&self.raw[*self.row_at.get(&row)?])
+    }
+
+    /// The row row `row` refers to by its first foreign key marked
+    /// `relation` whose fields are all non-null in it, if any.
+    pub fn row_related(&self, row: Key, relation: &Relation) -> Option<Related<'_>> {
+        let raw = self.raw_row(row)?;
+        let keys = self.schema.as_ref()?.foreign_keys.iter();
+        keys.filter(|fk| fk.relation.as_ref() == Some(relation))
+            .find_map(|key| {
+                let values = (key.fields.iter())
+                    .map(|f| raw.get(f).filter(|v| **v != Wire::Null))
+                    .collect::<Option<Vec<&Wire>>>()?;
+                (!values.is_empty()).then_some(Related { key, values })
+            })
+    }
+
+    /// Row `row`'s parent: the row its first `parent` key that relates it
+    /// refers to.
+    pub fn row_parent(&self, row: Key) -> Option<Related<'_>> {
+        self.row_related(row, &Relation::Parent)
+    }
+
+    /// What row `row` is a Facet of: the row its first `facet-of` key that
+    /// relates it refers to. `None`: the row's Facets open its own subject.
+    pub fn row_facet_of(&self, row: Key) -> Option<Related<'_>> {
+        self.row_related(row, &Relation::FacetOf)
+    }
+
+    /// Row `row`'s Facets, in the schema's order. A command one is left out
+    /// where a template names a value the row lacks, or its subject address
+    /// when it has none.
+    pub fn row_facets(&self, row: Key) -> Vec<RowFacet<'_>> {
+        let (Some(schema), Some(raw)) = (self.schema.as_ref(), self.raw_row(row)) else {
+            return Vec::new();
+        };
+        let text = |name: &str| raw.get(name).and_then(facet::text);
+        let of = self.row_facet_of(row);
+        (schema.facets.iter())
+            .filter_map(|facet| {
+                let opening = match &facet.endpoint {
+                    Endpoint::Fields(fields) => Opening::Endpoint(
+                        (fields.iter())
+                            .filter_map(|(recipe, field)| {
+                                let value = raw.get(field).filter(|v| **v != Wire::Null)?;
+                                Some((recipe.as_str(), value))
+                            })
+                            .collect(),
+                    ),
+                    Endpoint::Argv(argv) => {
+                        let value = |name: &str| match name {
+                            ADDRESS => self.row_subject(row).map(String::from),
+                            name => text(name),
+                        };
+                        Opening::Command(
+                            (argv.iter())
+                                .map(|a| facet::expand(a, value))
+                                .collect::<Option<_>>()?,
+                        )
+                    }
+                };
+                let state = facet.state.as_deref().and_then(text);
+                let reachable = match &facet.reachable {
+                    None => true,
+                    Some(values) => state.is_some_and(|s| values.contains(&s)),
+                };
+                let reason = (facet.reason.as_deref())
+                    .filter(|_| !reachable)
+                    .and_then(|f| raw.get(f)?.as_str());
+                Some(RowFacet {
+                    facet,
+                    of: of.clone(),
+                    opening,
+                    reachable,
+                    reason,
+                })
+            })
+            .collect()
     }
 
     /// The Key of the column for field `name`, if the schema has it.

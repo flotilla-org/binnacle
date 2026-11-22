@@ -184,6 +184,7 @@ fn table(fields: &[(String, Kind)], primary_key: &[String]) -> Message {
             primary_key: primary_key.to_vec(),
             foreign_keys: Vec::new(),
             subject: None,
+            facets: Vec::new(),
         },
         incarnation: Some("durable".into()),
         table: None,

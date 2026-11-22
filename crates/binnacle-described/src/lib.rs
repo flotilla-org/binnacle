@@ -13,18 +13,25 @@
 //! [`encode_cbor_item`] write messages, as a server (or a fake one) does.
 
 mod clause;
+mod facet;
 mod keys;
 mod layout;
+mod listing;
 mod message;
 mod scope;
 mod source;
 mod wire;
 
+pub use facet::{Endpoint, Facet, Relation};
+pub use listing::{ListedKind, Listing};
 pub use message::{
     Category, DEFAULT_MAX_ITEM, DecodeError, Decoder, Encoding, Field, FieldType, ForeignKey,
     Message, Row, RowsMessage, Schema, Subject, TableMessage, decode_cbor_item, decode_json_line,
     encode_cbor_item, encode_json_line,
 };
 pub use scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
-pub use source::{Column, DescribedSource, Received, Reference, Status, Unhandled, Values, typed};
+pub use source::{
+    Column, DescribedSource, Opening, Received, Reference, Related, RowFacet, Status, Unhandled,
+    Values, typed,
+};
 pub use wire::{Wire, deterministic_cbor};
