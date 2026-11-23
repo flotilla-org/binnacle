@@ -226,8 +226,9 @@ pub(crate) fn expand<'a>(
 }
 
 /// A value as a template or a state comparison reads it: text as it is,
-/// a number or a boolean as written; `None` for a null, bytes, a list or a
-/// map.
+/// a number or a boolean as Rust writes it (a float `1.0` as `1`, so a
+/// `reachable` value for it reads `1`); `None` for a null, bytes, a list or
+/// a map.
 pub(crate) fn text(value: &Wire) -> Option<String> {
     match value {
         Wire::Text(s) => Some(s.clone()),
