@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use binnacle_described::{
-    Decoder, DescribedSource, Encoding, Field, FieldType, HostRequest, Message, Received, Scope,
-    Wire,
+    Decoder, DescribedSource, Encoding, Endpoint, Facet, Field, FieldType, ForeignKey, HostRequest,
+    Listing, Message, Received, Relation, Scope, Wire,
 };
 use binnacle_testkit::fake_tables::{
     FakeTable, FakeTables, Running, Step, Stream, fetch, open, send,
@@ -644,6 +644,7 @@ fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
         primary_key: Vec::new(),
         foreign_keys: Vec::new(),
         subject: None,
+        facets: Vec::new(),
     };
     let notes = FakeTable::new("notes", schema).with_rows(vec![
         row("a", "x"),
@@ -828,6 +829,50 @@ fn a_tables_subject_is_in_its_description_and_names_each_rows_subject() {
     assert_eq!(source.subject(), Some(("crew", name)));
     let alpha = source.row_key(&[Wire::Text("alpha".into())]).unwrap();
     assert_eq!(source.row_subject(alpha), Some("alpha"));
+}
+
+#[test]
+fn the_listing_marks_subject_and_facet_tables_and_descriptions_carry_their_facets() {
+    let facet = Facet {
+        recipe: "command".into(),
+        label: Some("Show".into()),
+        endpoint: Endpoint::Argv(vec!["show".into(), "{address}".into()]),
+        state: Some("phase".into()),
+        reachable: None,
+        reason: None,
+    };
+    let parent = ForeignKey {
+        fields: vec!["name".into()],
+        resource: Some("names".into()),
+        reference_fields: vec!["name".into()],
+        relation: Some(Relation::Parent),
+    };
+    let fake = FakeTables::new()
+        .table(FakeTable::generated("plains", 1))
+        .table(FakeTable::generated("subjects", 1).with_subject("thing", "name"))
+        .table(
+            FakeTable::generated("facets", 1)
+                .with_subject("thing", "name")
+                .with_facet(facet.clone())
+                .with_foreign_key(parent.clone()),
+        )
+        .start()
+        .unwrap();
+    let listed = fetch(fake.addr(), "/tables", &[]).unwrap();
+    let listing = Listing::from_json_bytes(&listed.body).unwrap();
+    assert_eq!(
+        listing.tables().collect::<Vec<_>>(),
+        ["plains", "subjects", "facets"]
+    );
+    assert_eq!(
+        listing.subject_tables().collect::<Vec<_>>(),
+        ["subjects", "facets"]
+    );
+    assert_eq!(listing.facet_tables().collect::<Vec<_>>(), ["facets"]);
+    let described = fetch(fake.addr(), "/tables/facets", &[]).unwrap();
+    let schema = binnacle_described::Schema::from_json_bytes(&described.body).unwrap();
+    assert_eq!(schema.facets, [facet]);
+    assert_eq!(schema.foreign_keys, [parent]);
 }
 
 /// Answers each request `fake` routes, over its address, and checks the

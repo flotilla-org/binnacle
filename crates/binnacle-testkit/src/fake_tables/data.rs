@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use binnacle_described::{
-    Decoder, Encoding, Field, FieldType, Message, Row, Schema, Subject, Wire,
+    Decoder, Encoding, Facet, Field, FieldType, ForeignKey, Message, Row, Schema, Subject, Wire,
 };
 use rigging_condition::{
     CheckError, Checked, Condition as Clause, Lookup, Path as ConditionPath, Row as ConditionRow,
@@ -53,6 +53,19 @@ impl FakeTable {
             kind: kind.into(),
             field: field.into(),
         });
+        self
+    }
+
+    /// Adds `facet` to its description's `facets`: one naming fields the
+    /// table lacks too.
+    pub fn with_facet(mut self, facet: Facet) -> FakeTable {
+        self.schema.facets.push(facet);
+        self
+    }
+
+    /// Adds `key` to its description's `foreignKeys`.
+    pub fn with_foreign_key(mut self, key: ForeignKey) -> FakeTable {
+        self.schema.foreign_keys.push(key);
         self
     }
 
@@ -144,6 +157,7 @@ impl FakeTable {
             primary_key: vec!["id".into()],
             foreign_keys: Vec::new(),
             subject: None,
+            facets: Vec::new(),
         };
         let rows = (0..rows as u64).map(generated_row).collect();
         FakeTable::new(name, schema).with_rows(rows)

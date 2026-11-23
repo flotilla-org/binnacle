@@ -6,6 +6,7 @@ use std::fmt;
 
 use serde_json::{Map, Value as Json};
 
+use crate::facet::{Facet, Relation};
 use crate::wire::Wire;
 
 /// One row as a message carries it: each field's value by field name. A
@@ -89,6 +90,8 @@ pub struct Schema {
     pub foreign_keys: Vec<ForeignKey>,
     /// What each row is about, if the table names it.
     pub subject: Option<Subject>,
+    /// The ways its rows can be opened.
+    pub facets: Vec<Facet>,
 }
 
 /// A table's subject: the address kind (ADR 0066) of what each row is
@@ -267,6 +270,10 @@ pub struct ForeignKey {
     pub resource: Option<String>,
     /// Its fields, one for each of `fields`.
     pub reference_fields: Vec<String>,
+    /// What the row referred to is to this one (its parent, or what this
+    /// row opens), if the key says. It relates a row only where all of
+    /// `fields` are non-null.
+    pub relation: Option<Relation>,
 }
 
 /// One name or a list of them, as Frictionless allows.
@@ -312,6 +319,7 @@ impl Schema {
                     .filter(|r| !r.is_empty())
                     .map(String::from),
                 reference_fields: names(reference.and_then(|r| r.get("fields"))),
+                relation: (fk.get("relation").and_then(Json::as_str)).map(Relation::from_name),
             }
         })
         .collect();
@@ -321,16 +329,21 @@ impl Schema {
             let (kind, field) = (text("kind")?, text("field")?);
             (fields.iter().any(|f| f.name == field)).then_some(Subject { kind, field })
         });
+        let facets = (object.get("facets").and_then(Json::as_array).into_iter())
+            .flatten()
+            .filter_map(|facet| Facet::from_json(facet, &fields))
+            .collect();
         Ok(Schema {
             fields,
             primary_key: names(object.get("primaryKey")),
             foreign_keys,
             subject,
+            facets,
         })
     }
 
     /// The schema as JSON, under the wire's names (`fields`, `primaryKey`,
-    /// `foreignKeys`, `subject`), each field written from its properties, so those
+    /// `foreignKeys`, `subject`, `facets`), each field written from its properties, so those
     /// this crate does not model survive.
     pub fn to_json(&self) -> Json {
         let fields = (self.fields.iter())
@@ -340,13 +353,17 @@ impl Schema {
             |names: &[String]| Json::Array(names.iter().cloned().map(Json::String).collect());
         let foreign_keys = (self.foreign_keys.iter())
             .map(|fk| {
-                serde_json::json!({
+                let mut key = serde_json::json!({
                     "fields": texts(&fk.fields),
                     "reference": {
                         "resource": fk.resource.clone().unwrap_or_default(),
                         "fields": texts(&fk.reference_fields),
                     },
-                })
+                });
+                if let Some(relation) = &fk.relation {
+                    key["relation"] = Json::String(relation.name().into());
+                }
+                key
             })
             .collect();
         let mut object = Map::new();
@@ -357,7 +374,17 @@ impl Schema {
             let subject = serde_json::json!({"kind": subject.kind, "field": subject.field});
             object.insert("subject".into(), subject);
         }
+        if !self.facets.is_empty() {
+            let facets = self.facets.iter().map(Facet::to_json).collect();
+            object.insert("facets".into(), Json::Array(facets));
+        }
         Json::Object(object)
+    }
+
+    /// The fields with role `role`, in order: `caption` gives a card's
+    /// title (the first), `badge` what a card shows beside it.
+    pub fn role_fields<'a>(&'a self, role: &'a str) -> impl Iterator<Item = &'a Field> + 'a {
+        self.fields.iter().filter(move |f| f.has_role(role))
     }
 
     /// Reads a schema from JSON bytes, as `GET /tables/{t}` answers with
@@ -939,7 +966,7 @@ pub struct DecodeError {
 }
 
 impl DecodeError {
-    fn json(e: serde_json::Error) -> DecodeError {
+    pub(crate) fn json(e: serde_json::Error) -> DecodeError {
         DecodeError {
             message: format!("JSON: {e}"),
         }
@@ -957,7 +984,7 @@ impl DecodeError {
         }
     }
 
-    fn schema(message: &str) -> DecodeError {
+    pub(crate) fn schema(message: &str) -> DecodeError {
         DecodeError::message(message)
     }
 }

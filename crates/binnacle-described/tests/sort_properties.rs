@@ -316,6 +316,7 @@ fn the_rows_sort_as_the_naive_total_order_with_the_invalid_tier(tc: TestCase) {
         primary_key: vec!["id".into()],
         foreign_keys: Vec::new(),
         subject: None,
+        facets: Vec::new(),
     };
     let mut source = DescribedSource::new("t", Scope::new("n"));
     source.receive(Message::Table(TableMessage {

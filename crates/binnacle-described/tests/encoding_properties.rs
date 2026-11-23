@@ -5,12 +5,46 @@
 use std::collections::BTreeMap;
 
 use binnacle_described::{
-    Field, ForeignKey, Message, RowsMessage, Schema, Subject, TableMessage, Wire, decode_cbor_item,
-    decode_json_line, encode_cbor_item, encode_json_line,
+    Endpoint, Facet, Field, ForeignKey, Message, Relation, RowsMessage, Schema, Subject,
+    TableMessage, Wire, decode_cbor_item, decode_json_line, encode_cbor_item, encode_json_line,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
 use serde_json::{Map, Value as Json, json};
+
+/// A Facet over fields `names` (one at least) that reads back as itself:
+/// its `state` named, since one left out reads as the `state`-role field.
+#[hegel::composite]
+fn facet(tc: &TestCase, names: Vec<String>) -> Facet {
+    let name = || tc.draw(gs::sampled_from(names.clone()));
+    let endpoint = match tc.draw(gs::booleans()) {
+        true => Endpoint::Fields(
+            (0..tc.draw(gs::integers::<usize>().max_value(2)))
+                .map(|i| (format!("part{i}"), name()))
+                .collect(),
+        ),
+        false => Endpoint::Argv(
+            (0..tc.draw(gs::integers::<usize>().max_value(3)))
+                .map(|_| match tc.draw(gs::integers::<u8>().max_value(2)) {
+                    0 => "{address}".to_owned(),
+                    1 => format!("--at={{{}}}", name()),
+                    _ => "{{literal}}".to_owned(),
+                })
+                .collect(),
+        ),
+    };
+    Facet {
+        recipe: tc.draw(gs::sampled_from(vec![
+            "cleat-session".to_owned(),
+            "command".into(),
+        ])),
+        label: tc.draw(gs::optional(gs::text().max_size(4))),
+        endpoint,
+        state: Some(name()),
+        reachable: tc.draw(gs::optional(gs::vecs(gs::text().max_size(3)).max_size(2))),
+        reason: tc.draw(gs::optional(gs::sampled_from(names.clone()))),
+    }
+}
 
 /// A scalar either encoding carries exactly; with `cbor`, byte strings,
 /// infinities and integers past `u64` and `i64` too.
@@ -101,6 +135,11 @@ fn message(tc: &TestCase, cbor: bool) -> Message {
                     fields: vec![first.clone()],
                     resource: tc.draw(gs::optional(gs::sampled_from(vec!["hosts".to_owned()]))),
                     reference_fields: vec!["metadata.name".into()],
+                    relation: tc.draw(gs::optional(gs::sampled_from(vec![
+                        Relation::Parent,
+                        Relation::FacetOf,
+                        Relation::Other("sibling".into()),
+                    ]))),
                 }],
                 _ => Vec::new(),
             };
@@ -111,12 +150,17 @@ fn message(tc: &TestCase, cbor: bool) -> Message {
                 }),
                 _ => None,
             };
+            let facets = match names.is_empty() {
+                true => Vec::new(),
+                false => tc.draw(gs::vecs(facet(names.clone())).max_size(2)),
+            };
             Message::Table(TableMessage {
                 schema: Schema {
                     fields,
                     primary_key: names.into_iter().take(1).collect(),
                     foreign_keys,
                     subject,
+                    facets,
                 },
                 incarnation: tc.draw(gs::optional(gs::sampled_from(vec!["durable".to_owned()]))),
                 table: tc.draw(gs::optional(gs::text().max_size(4))),
@@ -221,6 +265,7 @@ fn messages_are_written_under_the_wires_own_names() {
             primary_key: vec!["id".into()],
             foreign_keys: Vec::new(),
             subject: None,
+            facets: Vec::new(),
         },
         incarnation: Some("durable".into()),
         table: None,

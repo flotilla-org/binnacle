@@ -495,6 +495,8 @@ impl View {
     }
 }
 
+// A message is sent at once and never held in bulk, so its size costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Out {
     Message(Message),
     Garbage,
@@ -912,7 +914,14 @@ fn serve(mut conn: Conn, shared: Arc<Shared>) {
                     if let Some(first) = kind.get_mut(..1) {
                         first.make_ascii_uppercase();
                     }
-                    json!({"kind": kind, "root": t.name, "tables": [t.name]})
+                    let mut listed = json!({"kind": kind, "root": t.name, "tables": [t.name]});
+                    if t.schema.subject.is_some() {
+                        listed["subjects"] = json!([t.name]);
+                    }
+                    if !t.schema.facets.is_empty() {
+                        listed["facets"] = json!([t.name]);
+                    }
+                    listed
                 })
                 .collect();
             let body = serde_json::to_vec(&json!({ "kinds": kinds })).expect("JSON");

@@ -117,6 +117,7 @@ impl DescribedSource {
     /// #         primary_key: vec!["name".into()],
     /// #         foreign_keys: Vec::new(),
     /// #         subject: None,
+    /// #         facets: Vec::new(),
     /// #     },
     /// #     incarnation: None,
     /// #     table: None,
